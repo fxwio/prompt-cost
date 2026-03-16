@@ -1,0 +1,19 @@
+server:
+  port: 8092
+  read_timeout: 30s
+  write_timeout: 60s
+  shutdown_timeout: 10s
+
+postgres:
+  dsn_env: POSTGRES_DSN   # postgres://pc:pc@localhost:5432/prompt_cost?sslmode=disable
+  max_conns: 10
+  min_conns: 2
+
+# pricing overrides: add custom models or override built-in prices
+pricing:
+  overrides: []
+  # Example:
+  # overrides:
+  #   - model: "my-custom-model"
+  #     input_per_1m_usd: 1.50
+  #     output_per_1m_usd: 6.00

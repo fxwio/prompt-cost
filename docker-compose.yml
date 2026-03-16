@@ -1,0 +1,41 @@
+services:
+  prompt-cost:
+    build: .
+    container_name: prompt-cost
+    ports:
+      - "8092:8092"
+    environment:
+      PROMPT_COST_CONFIG_PATH: /etc/prompt-cost/config.yaml
+    env_file: .env
+    volumes:
+      - ./config.yaml:/etc/prompt-cost/config.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8092/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  postgres:
+    image: postgres:17-alpine
+    container_name: pc-postgres
+    ports:
+      - "5434:5432"
+    environment:
+      POSTGRES_USER: pc
+      POSTGRES_PASSWORD: pc
+      POSTGRES_DB: prompt_cost
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pc -d prompt_cost"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  postgres_data:
