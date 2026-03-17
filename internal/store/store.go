@@ -4,22 +4,41 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/fxwio/prompt-cost/internal/model"
 	"github.com/fxwio/prompt-cost/pkg/pgstore"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// errDBUnavailable is returned when the connection pool has not been initialized.
+var errDBUnavailable = errors.New("pgstore: database not available")
+
+// db returns the pool or errDBUnavailable. Every store function calls this so
+// that a missing pgstore.Init() becomes a clean error instead of a nil-deref.
+func db() (*pgxpool.Pool, error) {
+	p := pgstore.Pool()
+	if p == nil {
+		return nil, errDBUnavailable
+	}
+	return p, nil
+}
 
 // ── Templates ─────────────────────────────────────────────────────────────────
 
 func CreateTemplate(ctx context.Context, t *model.Template) (*model.Template, error) {
+	p, err := db()
+	if err != nil {
+		return nil, err
+	}
 	const q = `
 		INSERT INTO templates (name, description, tags)
 		VALUES ($1, $2, $3)
 		RETURNING id, name, description, tags, active_version, version_count, created_at, updated_at`
 	var out model.Template
-	if err := pgstore.Pool().QueryRow(ctx, q, t.Name, t.Description, t.Tags).Scan(
+	if err := p.QueryRow(ctx, q, t.Name, t.Description, t.Tags).Scan(
 		&out.ID, &out.Name, &out.Description, &out.Tags,
 		&out.ActiveVersion, &out.VersionCount, &out.CreatedAt, &out.UpdatedAt,
 	); err != nil {
@@ -29,10 +48,14 @@ func CreateTemplate(ctx context.Context, t *model.Template) (*model.Template, er
 }
 
 func GetTemplate(ctx context.Context, id string) (*model.Template, error) {
+	p, err := db()
+	if err != nil {
+		return nil, err
+	}
 	const q = `SELECT id, name, description, tags, active_version, version_count, created_at, updated_at
                FROM templates WHERE id = $1`
 	var t model.Template
-	if err := pgstore.Pool().QueryRow(ctx, q, id).Scan(
+	if err := p.QueryRow(ctx, q, id).Scan(
 		&t.ID, &t.Name, &t.Description, &t.Tags,
 		&t.ActiveVersion, &t.VersionCount, &t.CreatedAt, &t.UpdatedAt,
 	); err != nil {
@@ -42,7 +65,11 @@ func GetTemplate(ctx context.Context, id string) (*model.Template, error) {
 }
 
 func ListTemplates(ctx context.Context) ([]model.Template, error) {
-	rows, err := pgstore.Pool().Query(ctx, `
+	p, err := db()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := p.Query(ctx, `
 		SELECT id, name, description, tags, active_version, version_count, created_at, updated_at
 		FROM templates ORDER BY created_at DESC`)
 	if err != nil {
@@ -62,7 +89,11 @@ func ListTemplates(ctx context.Context) ([]model.Template, error) {
 }
 
 func DeleteTemplate(ctx context.Context, id string) error {
-	_, err := pgstore.Pool().Exec(ctx, `DELETE FROM templates WHERE id = $1`, id)
+	p, err := db()
+	if err != nil {
+		return err
+	}
+	_, err = p.Exec(ctx, `DELETE FROM templates WHERE id = $1`, id)
 	return err
 }
 
@@ -71,7 +102,11 @@ func DeleteTemplate(ctx context.Context, id string) error {
 // CreateVersion saves a new version and increments version_count.
 // Returns the newly created version.
 func CreateVersion(ctx context.Context, templateID, content string, variables []string) (*model.TemplateVersion, error) {
-	tx, err := pgstore.Pool().Begin(ctx)
+	p, err := db()
+	if err != nil {
+		return nil, err
+	}
+	tx, err := p.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -111,10 +146,14 @@ func CreateVersion(ctx context.Context, templateID, content string, variables []
 }
 
 func GetVersion(ctx context.Context, templateID string, version int) (*model.TemplateVersion, error) {
+	p, err := db()
+	if err != nil {
+		return nil, err
+	}
 	const q = `SELECT id, template_id, version, content, variables, created_at
                FROM template_versions WHERE template_id = $1 AND version = $2`
 	var v model.TemplateVersion
-	if err := pgstore.Pool().QueryRow(ctx, q, templateID, version).Scan(
+	if err := p.QueryRow(ctx, q, templateID, version).Scan(
 		&v.ID, &v.TemplateID, &v.Version, &v.Content, &v.Variables, &v.CreatedAt,
 	); err != nil {
 		return nil, fmt.Errorf("store.GetVersion(%q, %d): %w", templateID, version, err)
@@ -123,7 +162,11 @@ func GetVersion(ctx context.Context, templateID string, version int) (*model.Tem
 }
 
 func ListVersions(ctx context.Context, templateID string) ([]model.TemplateVersion, error) {
-	rows, err := pgstore.Pool().Query(ctx, `
+	p, err := db()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := p.Query(ctx, `
 		SELECT id, template_id, version, content, variables, created_at
 		FROM template_versions WHERE template_id = $1 ORDER BY version`, templateID)
 	if err != nil {
@@ -144,7 +187,11 @@ func ListVersions(ctx context.Context, templateID string) ([]model.TemplateVersi
 
 // ActivateVersion sets the active version for a template.
 func ActivateVersion(ctx context.Context, templateID string, version int) error {
-	result, err := pgstore.Pool().Exec(ctx, `
+	p, err := db()
+	if err != nil {
+		return err
+	}
+	result, err := p.Exec(ctx, `
 		UPDATE templates SET active_version = $1, updated_at = NOW()
 		WHERE id = $2 AND EXISTS (
 			SELECT 1 FROM template_versions
@@ -162,6 +209,10 @@ func ActivateVersion(ctx context.Context, templateID string, version int) error 
 // ── Usage Events ──────────────────────────────────────────────────────────────
 
 func RecordUsage(ctx context.Context, e *model.UsageEvent) (*model.UsageEvent, error) {
+	p, err := db()
+	if err != nil {
+		return nil, err
+	}
 	meta, _ := json.Marshal(e.Metadata)
 	const q = `
 		INSERT INTO usage_events (tenant, app, model, prompt_tokens, completion_tokens, cost_usd, metadata)
@@ -170,7 +221,7 @@ func RecordUsage(ctx context.Context, e *model.UsageEvent) (*model.UsageEvent, e
 		          cost_usd::float8, metadata, created_at`
 	var out model.UsageEvent
 	var metaRaw []byte
-	if err := pgstore.Pool().QueryRow(ctx, q,
+	if err := p.QueryRow(ctx, q,
 		e.Tenant, e.App, e.Model, e.PromptTokens, e.CompletionTokens, e.CostUSD, string(meta),
 	).Scan(
 		&out.ID, &out.Tenant, &out.App, &out.Model,
@@ -183,6 +234,10 @@ func RecordUsage(ctx context.Context, e *model.UsageEvent) (*model.UsageEvent, e
 }
 
 func ListUsageEvents(ctx context.Context, tenant, app, mdl string, from, to time.Time, limit, offset int) ([]model.UsageEvent, error) {
+	p, err := db()
+	if err != nil {
+		return nil, err
+	}
 	query := `SELECT id, tenant, app, model, prompt_tokens, completion_tokens,
 	                 cost_usd::float8, metadata, created_at
 	          FROM usage_events WHERE 1=1`
@@ -217,7 +272,7 @@ func ListUsageEvents(ctx context.Context, tenant, app, mdl string, from, to time
 	query += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d OFFSET $%d", n, n+1)
 	args = append(args, limit, offset)
 
-	rows, err := pgstore.Pool().Query(ctx, query, args...)
+	rows, err := p.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store.ListUsageEvents: %w", err)
 	}
@@ -238,6 +293,10 @@ func ListUsageEvents(ctx context.Context, tenant, app, mdl string, from, to time
 
 // BuildCostReport aggregates usage events into a cost report.
 func BuildCostReport(ctx context.Context, groupBy model.GroupBy, from, to time.Time) (*model.CostReport, error) {
+	p, err := db()
+	if err != nil {
+		return nil, err
+	}
 	var groupCol string
 	switch groupBy {
 	case model.GroupByTenant:
@@ -261,7 +320,7 @@ func BuildCostReport(ctx context.Context, groupBy model.GroupBy, from, to time.T
 		GROUP BY %s
 		ORDER BY cost_usd DESC`, groupCol, groupCol)
 
-	rows, err := pgstore.Pool().Query(ctx, query, from, to)
+	rows, err := p.Query(ctx, query, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("store.BuildCostReport: %w", err)
 	}

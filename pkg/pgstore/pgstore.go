@@ -39,12 +39,11 @@ func Init(ctx context.Context, dsn string, maxConns, minConns int32) error {
 	return migrate(ctx, p)
 }
 
+// Pool returns the global connection pool, or nil if Init has not been called.
+// Callers must check for nil before use; see internal/store for the db() helper.
 func Pool() *pgxpool.Pool {
 	mu.RLock()
 	defer mu.RUnlock()
-	if pool == nil {
-		panic("pgstore: Pool() called before Init()")
-	}
 	return pool
 }
 
